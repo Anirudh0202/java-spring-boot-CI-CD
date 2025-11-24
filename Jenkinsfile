@@ -1,14 +1,9 @@
 pipeline {
-    agent {
-        docker {
-            image 'maven:3.9.6-eclipse-temurin-17'
-            args '-v /var/run/docker.sock:/var/run/docker.sock'
-        }
-    }
+    agent any
 
     environment {
-        IMAGE = "anirudhdwivedi/spring-boot-hello"
-        DOCKER_CREDENTIALS = "dockerhub-creds"
+        IMAGE = "anirudhdwivedi/spring-boot-hello"     // your DockerHub repo
+        TAG   = "${env.BUILD_NUMBER}"
     }
 
     stages {
@@ -19,43 +14,51 @@ pipeline {
             }
         }
 
-        stage('Build & Test') {
+        stage('Build with Maven (inside Docker)') {
             steps {
-                sh 'mvn -B -DskipTests=false clean package'
-            }
-            post {
-                always {
-                    junit '**/target/surefire-reports/*.xml'
-                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
-                }
+                sh '''
+                    docker run --rm \
+                    -v "$PWD":/app \
+                    -w /app \
+                    maven:3.9.6-eclipse-temurin-17 \
+                    mvn -B -DskipTests=false clean package
+                '''
             }
         }
 
         stage('Docker Build') {
             steps {
-                sh "docker build -t ${IMAGE}:${env.BUILD_NUMBER} ."
-                sh "docker tag ${IMAGE}:${env.BUILD_NUMBER} ${IMAGE}:latest"
+                sh "docker build -t ${IMAGE}:${TAG} ."
+                sh "docker tag ${IMAGE}:${TAG} ${IMAGE}:latest"
             }
         }
 
-        stage('Push to DockerHub') {
+        stage('Docker Push') {
             steps {
-                script {
-                    docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS) {
-                        sh "docker push ${IMAGE}:${env.BUILD_NUMBER}"
-                        sh "docker push ${IMAGE}:latest"
-                    }
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh "echo $PASS | docker login -u $USER --password-stdin"
                 }
+                sh "docker push ${IMAGE}:${TAG}"
+                sh "docker push ${IMAGE}:latest"
             }
         }
 
-        stage('Deploy') {
+        stage('Deploy Container') {
             steps {
                 sh '''
                     docker rm -f spring-boot-hello || true
-                    docker run -d --name spring-boot-hello -p 8081:8080 ${IMAGE}:${env.BUILD_NUMBER}
+                    docker run -d --name spring-boot-hello -p 8081:8080 ${IMAGE}:${TAG}
                 '''
             }
+        }
+    }
+
+    post {
+        success {
+            echo "Build SUCCESS: ${IMAGE}:${TAG}"
+        }
+        failure {
+            echo "Build FAILED"
         }
     }
 }
